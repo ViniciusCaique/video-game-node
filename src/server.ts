@@ -1,5 +1,4 @@
 import { fastifySwagger } from "@fastify/swagger";
-import { fastifySwaggerUi } from "@fastify/swagger-ui";
 import { fastify } from "fastify";
 import {
 	hasZodFastifySchemaValidationErrors,
@@ -31,12 +30,8 @@ app.register(fastifySwagger, {
 	transform: jsonSchemaTransform,
 });
 
-app.register(fastifySwaggerUi, {
-	routePrefix: "/docs",
-});
-
 app.register(import("@scalar/fastify-api-reference"), {
-	routePrefix: "/swagger",
+	routePrefix: "/docs",
 });
 
 app.register(authRoutes, {
