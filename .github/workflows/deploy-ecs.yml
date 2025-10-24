@@ -1,0 +1,192 @@
+name: Deploy to AWS ECS
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'deploy'
+        type: choice
+        options:
+          - deploy
+          - destroy
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: video-games-api
+  ECS_SERVICE: video-games-service
+  ECS_CLUSTER: video-games-cluster
+  ECS_TASK_DEFINITION: video-games-task
+  CONTAINER_NAME: video-games-api
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'deploy' || github.event.inputs.action == ''
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials using OIDC
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build the Docker image
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+        
+        # Push the images to ECR
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        
+        # Output the image URI
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Create or update ECS infrastructure
+      run: |
+        # Create ECR repository if it doesn't exist
+        aws ecr describe-repositories --repository-names $ECR_REPOSITORY || \
+        aws ecr create-repository --repository-name $ECR_REPOSITORY
+        
+        # Create ECS cluster if it doesn't exist
+        aws ecs describe-clusters --clusters $ECS_CLUSTER || \
+        aws ecs create-cluster --cluster-name $ECS_CLUSTER --capacity-providers FARGATE --default-capacity-provider-strategy capacityProvider=FARGATE,weight=1
+        
+        # Create or update task definition
+        cat > task-definition.json << EOF
+        {
+          "family": "$ECS_TASK_DEFINITION",
+          "networkMode": "awsvpc",
+          "requiresCompatibilities": ["FARGATE"],
+          "cpu": "256",
+          "memory": "512",
+          "executionRoleArn": "${{ secrets.ECS_EXECUTION_ROLE_ARN }}",
+          "taskRoleArn": "${{ secrets.ECS_TASK_ROLE_ARN }}",
+          "containerDefinitions": [
+            {
+              "name": "$CONTAINER_NAME",
+              "image": "${{ steps.build-image.outputs.image }}",
+              "essential": true,
+              "portMappings": [
+                {
+                  "containerPort": 3000,
+                  "protocol": "tcp"
+                }
+              ],
+              "environment": [
+                {
+                  "name": "NODE_ENV",
+                  "value": "production"
+                },
+                {
+                  "name": "PORT",
+                  "value": "3000"
+                }
+              ],
+              "secrets": [
+                {
+                  "name": "DATABASE_URL",
+                  "valueFrom": "${{ secrets.DATABASE_URL_SECRET_ARN }}"
+                },
+                {
+                  "name": "JWT_SECRET",
+                  "valueFrom": "${{ secrets.JWT_SECRET_SECRET_ARN }}"
+                }
+              ],
+              "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                  "awslogs-group": "/ecs/video-games-api",
+                  "awslogs-region": "$AWS_REGION",
+                  "awslogs-stream-prefix": "ecs"
+                }
+              }
+            }
+          ]
+        }
+        EOF
+        
+        # Register task definition
+        aws ecs register-task-definition --cli-input-json file://task-definition.json
+
+    - name: Create or update ECS service
+      run: |
+        # Check if service exists
+        if aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE | grep -q "ACTIVE"; then
+          echo "Service exists, updating..."
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --task-definition $ECS_TASK_DEFINITION \
+            --force-new-deployment
+        else
+          echo "Creating new service..."
+          aws ecs create-service \
+            --cluster $ECS_CLUSTER \
+            --service-name $ECS_SERVICE \
+            --task-definition $ECS_TASK_DEFINITION \
+            --desired-count 1 \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.SUBNET_IDS }}],securityGroups=[${{ secrets.SECURITY_GROUP_ID }}],assignPublicIp=ENABLED}"
+        fi
+
+    - name: Wait for service to be stable
+      run: |
+        aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE
+
+  destroy:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'destroy'
+    
+    steps:
+    - name: Configure AWS credentials using OIDC
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Delete ECS service
+      run: |
+        # Scale down service to 0
+        aws ecs update-service \
+          --cluster $ECS_CLUSTER \
+          --service $ECS_SERVICE \
+          --desired-count 0 || true
+        
+        # Wait for tasks to stop
+        aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE || true
+        
+        # Delete service
+        aws ecs delete-service \
+          --cluster $ECS_CLUSTER \
+          --service $ECS_SERVICE || true
+
+    - name: Delete ECS cluster
+      run: |
+        aws ecs delete-cluster --cluster $ECS_CLUSTER || true
+
+    - name: Delete ECR repository (optional)
+      run: |
+        # Uncomment if you want to delete ECR repository and all images
+        # aws ecr delete-repository --repository-name $ECR_REPOSITORY --force || true
+        echo "ECR repository preserved. Uncomment above line to delete it."

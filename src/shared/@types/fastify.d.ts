@@ -1,5 +1,5 @@
-import 'fastify'
+import "fastify";
 
-declare module 'fastify' {
-  interface FastifyTypeProvider extends ZodTypeProvider {}
+declare module "fastify" {
+	interface FastifyTypeProvider extends ZodTypeProvider {}
 }
