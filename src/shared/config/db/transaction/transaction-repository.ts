@@ -1,5 +1,5 @@
 import { db, type Transaction } from "..";
-import { TransactionRepository } from "./transaction-interface";
+import type { TransactionRepository } from "./transaction-interface";
 
 export class DrizzleTransactionRepository implements TransactionRepository {
 	startStransaction<T>(

@@ -1,9 +1,9 @@
-import { Transaction } from "@/shared/config/db";
-import { User } from "../../domain/user";
-import {
+import type { Transaction } from "@/shared/config/db";
+import type {
 	CreateUserInput,
 	UpdateUserInput,
 } from "../../domain/repository-types";
+import type { User } from "../../domain/user";
 
 export interface UserRepository {
 	findByEmail(email: string, tx?: Transaction): Promise<User | undefined>;

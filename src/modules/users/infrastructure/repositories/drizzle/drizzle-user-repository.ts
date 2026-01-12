@@ -1,12 +1,12 @@
-import { db, Transaction } from "@/shared/config/db";
-import {
+import type {
 	CreateUserInput,
 	UpdateUserInput,
 } from "@/modules/users/domain/repository-types";
-import { UserRepository } from "../user-repository";
-import { eq } from "drizzle-orm";
+import { type User, UserStatus } from "@/modules/users/domain/user";
+import { db, type Transaction } from "@/shared/config/db";
 import { users } from "@/shared/config/db/schema/users";
-import { User, UserStatus } from "@/modules/users/domain/user";
+import { eq } from "drizzle-orm";
+import type { UserRepository } from "../user-repository";
 
 export class DrizzleUserRepository implements UserRepository {
 	async findByEmail(
